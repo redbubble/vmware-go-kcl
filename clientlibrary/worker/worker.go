@@ -57,11 +57,12 @@ type Worker struct {
 	workerID    string
 	consumerARN string
 
-	processorFactory kcl.IRecordProcessorFactory
-	kclConfig        *config.KinesisClientLibConfiguration
-	kc               kinesisiface.KinesisAPI
-	checkpointer     chk.Checkpointer
-	mService         metrics.MonitoringService
+	processorFactory          kcl.IRecordProcessorFactory
+	kclConfig                 *config.KinesisClientLibConfiguration
+	kc                        kinesisiface.KinesisAPI
+	checkpointer              chk.Checkpointer
+	shardStealingCheckpointer chk.ShardStealingCheckpointer
+	mService                  metrics.MonitoringService
 
 	stop      *chan struct{}
 	waitGroup *sync.WaitGroup
@@ -364,7 +365,7 @@ func (w *Worker) eventLoop() {
 func (w *Worker) rebalance() error {
 	log := w.kclConfig.Logger
 
-	workers, err := w.checkpointer.ListActiveWorkers(w.shardStatus)
+	workers, err := w.shardStealingCheckpointer.ListActiveWorkers(w.shardStatus)
 	if err != nil {
 		log.Debugf("Error listing workers. workerID: %s. Error: %+v ", w.workerID, err)
 		return err
@@ -438,7 +439,7 @@ func (w *Worker) rebalance() error {
 	shardToSteal := workers[workerSteal][randIndex]
 	log.Debugf("Stealing shard %s from %s", shardToSteal, workerSteal)
 
-	err = w.checkpointer.ClaimShard(w.shardStatus[shardToSteal.ID], w.workerID)
+	err = w.shardStealingCheckpointer.ClaimShard(w.shardStatus[shardToSteal.ID], w.workerID)
 	if err != nil {
 		w.shardStealInProgress = false
 		return err
