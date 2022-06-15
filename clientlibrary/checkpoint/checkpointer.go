@@ -76,13 +76,6 @@ type Checkpointer interface {
 
 	// RemoveLeaseOwner to remove lease owner for the shard entry to make the shard available for reassignment
 	RemoveLeaseOwner(string) error
-
-	// New Lease Stealing Methods
-	// ListActiveWorkers returns active workers and their shards
-	ListActiveWorkers(map[string]*par.ShardStatus) (map[string][]*par.ShardStatus, error)
-
-	// ClaimShard claims a shard for stealing
-	ClaimShard(*par.ShardStatus, string) error
 }
 
 // ErrSequenceIDNotFound is returned by FetchCheckpoint when no SequenceID is found
