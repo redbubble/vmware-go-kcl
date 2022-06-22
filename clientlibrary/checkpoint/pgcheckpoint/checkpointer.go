@@ -1,4 +1,4 @@
-package checkpoint
+package pgcheckpoint
 
 import (
 	"errors"
@@ -6,20 +6,19 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/vmware/vmware-go-kcl/clientlibrary/checkpoint"
 	"github.com/vmware/vmware-go-kcl/clientlibrary/config"
-	"github.com/vmware/vmware-go-kcl/clientlibrary/database"
-	"github.com/vmware/vmware-go-kcl/clientlibrary/database/models"
 	par "github.com/vmware/vmware-go-kcl/clientlibrary/partition"
+	"github.com/vmware/vmware-go-kcl/logger"
 )
 
 const (
 	NumMaxRetriesPostgress = 5
 )
 
-type PostgresCheckpoint struct {
-	log                     zerolog.Logger
+type Checkpointer struct {
+	log                     logger.Logger
 	TableName               string
 	streamName              string
 	leaseTableReadCapacity  int64
@@ -27,11 +26,25 @@ type PostgresCheckpoint struct {
 	LeaseDuration           int
 	kclConfig               *config.KinesisClientLibConfiguration
 	Retries                 int
-	Datastore               database.ConsumerDatastore
+	Datastore               ConsumerDatastore
 	lastLeaseSync           time.Time
 }
 
-func (c *PostgresCheckpoint) GetLease(shard *par.ShardStatus, assignTo string) error {
+func NewPostgresCheckpoint(kclConfig *config.KinesisClientLibConfiguration, db ConsumerDatastore) *Checkpointer {
+	return &Checkpointer{
+		log:                     kclConfig.Logger,
+		TableName:               kclConfig.TableName,
+		streamName:              kclConfig.StreamName,
+		leaseTableReadCapacity:  int64(kclConfig.InitialLeaseTableReadCapacity),
+		leaseTableWriteCapacity: int64(kclConfig.InitialLeaseTableWriteCapacity),
+		LeaseDuration:           kclConfig.FailoverTimeMillis,
+		kclConfig:               kclConfig,
+		Retries:                 NumMaxRetriesPostgress,
+		Datastore:               db,
+	}
+}
+
+func (c *Checkpointer) GetLease(shard *par.ShardStatus, assignTo string) error {
 	ck, _ := c.Datastore.GetCheckpoint(shard.ID, c.streamName)
 	if ck == nil {
 		return nil
@@ -45,7 +58,7 @@ func (c *PostgresCheckpoint) GetLease(shard *par.ShardStatus, assignTo string) e
 		}
 	}
 
-	ret := &models.Checkpoint{
+	ret := &Checkpoint{
 		ShardID:      shard.ID,
 		StreamName:   c.streamName,
 		LeaseOwner:   assignTo,
@@ -74,8 +87,8 @@ func (c *PostgresCheckpoint) GetLease(shard *par.ShardStatus, assignTo string) e
 	return nil
 }
 
-func (c *PostgresCheckpoint) CheckpointSequence(shard *par.ShardStatus) error {
-	ret := &models.Checkpoint{
+func (c *Checkpointer) CheckpointSequence(shard *par.ShardStatus) error {
+	ret := &Checkpoint{
 		ShardID:        shard.ID,
 		StreamName:     c.streamName,
 		SequenceNumber: shard.Checkpoint,
@@ -90,7 +103,7 @@ func (c *PostgresCheckpoint) CheckpointSequence(shard *par.ShardStatus) error {
 	return c.Datastore.SaveCheckpoint(ret, false)
 }
 
-func (c *PostgresCheckpoint) FetchCheckpoint(shard *par.ShardStatus) error {
+func (c *Checkpointer) FetchCheckpoint(shard *par.ShardStatus) error {
 	ck, err := c.Datastore.GetCheckpoint(shard.ID, c.streamName)
 	if err != nil {
 		log.Error().Err(err).Msgf("unable to fetch checkpoint: %s", err)
@@ -98,7 +111,7 @@ func (c *PostgresCheckpoint) FetchCheckpoint(shard *par.ShardStatus) error {
 	}
 
 	if ck == nil {
-		return ErrSequenceIDNotFound
+		return checkpoint.ErrSequenceIDNotFound
 	}
 
 	log.Printf("Retrieved Shard Iterator %s\n", ck.SequenceNumber)
@@ -115,7 +128,7 @@ func (c *PostgresCheckpoint) FetchCheckpoint(shard *par.ShardStatus) error {
 	return nil
 }
 
-func (c *PostgresCheckpoint) RemoveLeaseInfo(shardID string) error {
+func (c *Checkpointer) RemoveLeaseInfo(shardID string) error {
 	err := c.Datastore.RemoveCheckpoint(shardID, c.streamName)
 	if err != nil {
 		log.Error().Err(err).Msgf("unable to remove lease info for shard: %s, stream: %s: %s", shardID, c.streamName, err)
@@ -127,7 +140,7 @@ func (c *PostgresCheckpoint) RemoveLeaseInfo(shardID string) error {
 	return nil
 }
 
-func (c *PostgresCheckpoint) RemoveLeaseOwner(shardID string) error {
+func (c *Checkpointer) RemoveLeaseOwner(shardID string) error {
 	err := c.Datastore.UnassignCheckpointLease(shardID, c.streamName)
 	if err != nil {
 		log.Error().Err(err).Msgf("unable to remove lease owner for shard: %s, stream: %s: %s", shardID, c.streamName, err)
@@ -138,7 +151,7 @@ func (c *PostgresCheckpoint) RemoveLeaseOwner(shardID string) error {
 }
 
 // ListActiveWorkers returns a map of workers and their shards
-func (checkpointer *PostgresCheckpoint) ListActiveWorkers(shardStatus map[string]*par.ShardStatus) (map[string][]*par.ShardStatus, error) {
+func (checkpointer *Checkpointer) ListActiveWorkers(shardStatus map[string]*par.ShardStatus) (map[string][]*par.ShardStatus, error) {
 	err := checkpointer.syncLeases(shardStatus)
 	if err != nil {
 		return nil, err
@@ -146,14 +159,14 @@ func (checkpointer *PostgresCheckpoint) ListActiveWorkers(shardStatus map[string
 
 	workers := map[string][]*par.ShardStatus{}
 	for _, shard := range shardStatus {
-		if shard.GetCheckpoint() == ShardEnd {
+		if shard.GetCheckpoint() == checkpoint.ShardEnd {
 			continue
 		}
 
 		leaseOwner := shard.GetLeaseOwner()
 		if leaseOwner == "" {
 			log.Debug().Msgf("Shard Not Assigned Error. ShardID: %s, WorkerID: %s", shard.ID, checkpointer.kclConfig.WorkerID)
-			return nil, ErrShardNotAssigned
+			return nil, checkpoint.ErrShardNotAssigned
 		}
 		if w, ok := workers[leaseOwner]; ok {
 			workers[leaseOwner] = append(w, shard)
@@ -165,9 +178,9 @@ func (checkpointer *PostgresCheckpoint) ListActiveWorkers(shardStatus map[string
 }
 
 // ClaimShard places a claim request on a shard to signal a steal attempt
-func (checkpointer *PostgresCheckpoint) ClaimShard(shard *par.ShardStatus, claimID string) error {
+func (checkpointer *Checkpointer) ClaimShard(shard *par.ShardStatus, claimID string) error {
 	err := checkpointer.FetchCheckpoint(shard)
-	if err != nil && err != ErrSequenceIDNotFound {
+	if err != nil && err != checkpoint.ErrSequenceIDNotFound {
 		return err
 	}
 	leaseTimeoutString := shard.GetLeaseTimeout().Format(time.RFC3339)
@@ -178,7 +191,7 @@ func (checkpointer *PostgresCheckpoint) ClaimShard(shard *par.ShardStatus, claim
 	whereClause := fmt.Sprintf("WHERE shard_id = %s AND lease_timeout >= %s", nextVal(&i), nextVal(&i))
 	params := []string{shard.ID, leaseTimeoutString}
 
-	checkPointRow := &models.Checkpoint{
+	checkPointRow := &Checkpoint{
 		ShardID:        shard.ID,
 		StreamName:     checkpointer.streamName,
 		SequenceNumber: shard.Checkpoint,
@@ -212,7 +225,7 @@ func (checkpointer *PostgresCheckpoint) ClaimShard(shard *par.ShardStatus, claim
 	return checkpointer.Datastore.UpdateCheckpoint(checkPointRow, &whereClause, params)
 }
 
-func (checkpointer *PostgresCheckpoint) syncLeases(shardStatus map[string]*par.ShardStatus) error {
+func (checkpointer *Checkpointer) syncLeases(shardStatus map[string]*par.ShardStatus) error {
 	log := checkpointer.kclConfig.Logger
 
 	if (checkpointer.lastLeaseSync.Add(time.Duration(checkpointer.kclConfig.LeaseSyncingTimeIntervalMillis) * time.Millisecond)).After(time.Now()) {
@@ -245,21 +258,7 @@ func (checkpointer *PostgresCheckpoint) syncLeases(shardStatus map[string]*par.S
 	return nil
 }
 
-func NewPostgresCheckpoint(kclConfig *config.KinesisClientLibConfiguration, db database.ConsumerDatastore) *PostgresCheckpoint {
-	return &PostgresCheckpoint{
-		log:                     log.Logger,
-		TableName:               kclConfig.TableName,
-		streamName:              kclConfig.StreamName,
-		leaseTableReadCapacity:  int64(kclConfig.InitialLeaseTableReadCapacity),
-		leaseTableWriteCapacity: int64(kclConfig.InitialLeaseTableWriteCapacity),
-		LeaseDuration:           kclConfig.FailoverTimeMillis,
-		kclConfig:               kclConfig,
-		Retries:                 NumMaxRetriesPostgress,
-		Datastore:               db,
-	}
-}
-
-func (c *PostgresCheckpoint) Init() error {
+func (c *Checkpointer) Init() error {
 	return nil
 }
 
