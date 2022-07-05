@@ -156,15 +156,27 @@ type (
 		Timestamp *time.Time `type:"Timestamp" timestampFormat:"unix"`
 	}
 
-	// Configuration for the Kinesis Client Library.
-	// Note: There is no need to configure credential provider. Credential can be get from InstanceProfile.
-	KinesisClientLibConfiguration struct {
-		// ApplicationName is name of application. Kinesis allows multiple applications to consume the same stream.
-		ApplicationName string
-
+	DynamoCheckpointerConfiguration struct {
 		// DynamoDBEndpoint is an optional endpoint URL that overrides the default generated endpoint for a DynamoDB client.
 		// If this is empty, the default generated endpoint will be used.
 		DynamoDBEndpoint string
+
+		// Read capacity to provision when creating the lease table (dynamoDB).
+		InitialLeaseTableReadCapacity int
+
+		// Write capacity to provision when creating the lease table.
+		InitialLeaseTableWriteCapacity int
+
+		// DynamoDBCredentials is used to access DynamoDB
+		DynamoDBCredentials *creds.Credentials
+
+		// TableName is name of the dynamo db table for managing kinesis stream default to ApplicationName
+		TableName string
+	}
+
+	KinesisClientConfiguration struct {
+		// ApplicationName is name of application. Kinesis allows multiple applications to consume the same stream.
+		ApplicationName string
 
 		// KinesisEndpoint is an optional endpoint URL that overrides the default generated endpoint for a Kinesis client.
 		// If this is empty, the default generated endpoint will be used.
@@ -172,12 +184,6 @@ type (
 
 		// KinesisCredentials is used to access Kinesis
 		KinesisCredentials *creds.Credentials
-
-		// DynamoDBCredentials is used to access DynamoDB
-		DynamoDBCredentials *creds.Credentials
-
-		// TableName is name of the dynamo db table for managing kinesis stream default to ApplicationName
-		TableName string
 
 		// StreamName is the name of Kinesis stream
 		StreamName string
@@ -227,6 +233,9 @@ type (
 		// ShardSyncIntervalMillis Time between tasks to sync leases and Kinesis shards
 		ShardSyncIntervalMillis int
 
+		// LeaseSyncingTimeInterval The number of milliseconds to wait before syncing with lease table (dynamoDB)
+		LeaseSyncingTimeIntervalMillis int
+
 		// CleanupTerminatedShardsBeforeExpiry Clean up shards we've finished processing (don't wait for expiration)
 		CleanupTerminatedShardsBeforeExpiry bool
 
@@ -254,12 +263,6 @@ type (
 		// Max leases to steal at one time (for load balancing)
 		MaxLeasesToStealAtOneTime int
 
-		// Read capacity to provision when creating the lease table (dynamoDB).
-		InitialLeaseTableReadCapacity int
-
-		// Write capacity to provision when creating the lease table.
-		InitialLeaseTableWriteCapacity int
-
 		// Worker should skip syncing shards and leases at startup if leases are present
 		// This is useful for optimizing deployments to large fleets working on a stable stream.
 		SkipShardSyncAtWorkerInitializationIfLeasesExist bool
@@ -278,9 +281,6 @@ type (
 
 		// LeaseStealingClaimTimeoutMillis The number of milliseconds to wait before another worker can aquire a claimed shard
 		LeaseStealingClaimTimeoutMillis int
-
-		// LeaseSyncingTimeInterval The number of milliseconds to wait before syncing with lease table (dynamoDB)
-		LeaseSyncingTimeIntervalMillis int
 	}
 )
 
